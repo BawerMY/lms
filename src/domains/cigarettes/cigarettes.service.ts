@@ -1,120 +1,75 @@
+import { httpError } from "../../utils/http.js";
 import {
-  CigaretteModel,
-  LogCigaretteInput,
-  LogCigaretteInputSchema,
-  UpdateCigaretteInput,
-  UpdateCigaretteInputSchema,
-  QueryLogsInput,
-  QueryLogsInputSchema,
-  SummaryQueryInput,
-  SummaryQueryInputSchema,
-} from './cigarettes.schema';
+  CigaretteEntryModel,
+  type CigarettesSummary,
+  type CreateCigaretteEntryInput,
+  type ICigaretteEntry,
+  type ListCigarettesQuery
+} from "./cigarettes.type.js";
 
-export class CigarettesService {
-  /**
-   * Log a cigarette entry (defaults date to today if omitted/null)
-   */
-  async logCigarettes(rawInput: LogCigaretteInput) {
-    const data = LogCigaretteInputSchema.parse(rawInput);
-    const doc = await CigaretteModel.create(data);
-    return doc.toObject();
-  }
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
-  /**
-   * Retrieve logs for a single date OR date range
-   */
-  async getLogs(rawParams: QueryLogsInput) {
-    const query = QueryLogsInputSchema.parse(rawParams);
-    const filter: Record<string, any> = {};
+function shiftDate(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
 
-    if (query.date) {
-      const startOfDay = new Date(query.date);
-      startOfDay.setUTCHours(0, 0, 0, 0);
+export async function logCigarettes(
+  input: CreateCigaretteEntryInput
+): Promise<ICigaretteEntry> {
+  const date = input.date ?? today();
+  return CigaretteEntryModel.create({ date, count: input.count, notes: input.notes });
+}
 
-      const endOfDay = new Date(query.date);
-      endOfDay.setUTCHours(23, 59, 59, 999);
-
-      filter.date = { $gte: startOfDay, $lte: endOfDay };
-    } else if (query.startDate || query.endDate) {
-      filter.date = {};
-      if (query.startDate) filter.date.$gte = query.startDate;
-      if (query.endDate) filter.date.$lte = query.endDate;
-    }
-
-    return CigaretteModel.find(filter).sort({ date: -1 }).limit(query.limit).lean();
-  }
-
-  /**
-   * Get summary aggregated count over custom range or preset periods
-   */
-  async getSummary(rawParams: SummaryQueryInput) {
-    const query = SummaryQueryInputSchema.parse(rawParams);
-    let fromDate = query.from;
-    let toDate = query.to ?? new Date();
-
-    if (query.period && !fromDate) {
-      fromDate = new Date();
-      switch (query.period) {
-        case 'day':
-          fromDate.setUTCHours(0, 0, 0, 0);
-          break;
-        case 'week':
-          fromDate.setDate(fromDate.getDate() - 7);
-          break;
-        case 'month':
-          fromDate.setMonth(fromDate.getMonth() - 1);
-          break;
-        case 'year':
-          fromDate.setFullYear(fromDate.getFullYear() - 1);
-          break;
-      }
-    }
-
-    const matchStage: Record<string, any> = {};
-    if (fromDate || toDate) {
-      matchStage.date = {};
-      if (fromDate) matchStage.date.$gte = fromDate;
-      if (toDate) matchStage.date.$lte = toDate;
-    }
-
-    const result = await CigaretteModel.aggregate([
-      { $match: matchStage },
-      {
-        $group: {
-          _id: null,
-          totalCount: { $sum: '$count' },
-          totalEntries: { $sum: 1 },
-          firstLog: { $min: '$date' },
-          lastLog: { $max: '$date' },
-        },
-      },
-    ]);
-
-    return {
-      totalCount: result[0]?.totalCount ?? 0,
-      totalEntries: result[0]?.totalEntries ?? 0,
-      range: {
-        from: fromDate ?? result[0]?.firstLog ?? null,
-        to: toDate ?? result[0]?.lastLog ?? null,
-      },
+export async function listEntries(query: ListCigarettesQuery): Promise<ICigaretteEntry[]> {
+  const filter: Record<string, unknown> = {};
+  if (query.from || query.to) {
+    filter.date = {
+      ...(query.from ? { $gte: query.from } : {}),
+      ...(query.to ? { $lte: query.to } : {})
     };
   }
+  return CigaretteEntryModel.find(filter).sort({ date: -1 }).limit(query.limit).lean();
+}
 
-  /**
-   * Update an existing record by ID
-   */
-  async updateLog(id: string, rawInput: UpdateCigaretteInput) {
-    const updates = UpdateCigaretteInputSchema.parse(rawInput);
-    const updated = await CigaretteModel.findByIdAndUpdate(
-      id,
-      { $set: updates },
-      { new: true }
-    ).lean();
+export async function getEntry(id: string): Promise<ICigaretteEntry> {
+  const entry = await CigaretteEntryModel.findById(id).lean();
+  if (!entry) throw httpError(404, `Cigarette entry ${id} not found`);
+  return entry;
+}
 
-    if (!updated) {
-      throw new Error(`Cigarette log with ID ${id} not found`);
-    }
+export async function deleteEntry(id: string): Promise<void> {
+  const entry = await CigaretteEntryModel.findByIdAndDelete(id);
+  if (!entry) throw httpError(404, `Cigarette entry ${id} not found`);
+}
 
-    return updated;
+export async function getSummary(): Promise<CigarettesSummary> {
+  const from = shiftDate(today(), 29);
+  const entries = await CigaretteEntryModel.find({ date: { $gte: from } })
+    .select("date count")
+    .lean();
+
+  const byDate = new Map(entries.map((e) => [e.date, e.count]));
+  const total = (days: number) =>
+    entries
+      .filter((e) => e.date >= shiftDate(today(), days - 1))
+      .reduce((sum, e) => sum + e.count, 0);
+
+  let smokeFreeStreakDays = 0;
+  for (let i = 0; i < 365; i++) {
+    if ((byDate.get(shiftDate(today(), i)) ?? 0) > 0) break;
+    smokeFreeStreakDays++;
   }
+
+  const last7DaysTotal = total(7);
+  return {
+    today: byDate.get(today()) ?? 0,
+    last7DaysTotal,
+    last7DaysDailyAverage: Number((last7DaysTotal / 7).toFixed(2)),
+    last30DaysTotal: total(30),
+    smokeFreeStreakDays
+  };
 }

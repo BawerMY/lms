@@ -1,44 +1,62 @@
-import { z } from 'zod';
-import { CigarettesService } from './cigarettes.service';
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
-  LogCigaretteInputSchema,
-  UpdateCigaretteInputSchema,
-  QueryLogsInputSchema,
-  SummaryQueryInputSchema,
-} from './cigarettes.schema';
-import { createMcpTool } from '../../common/mcp/createTool';
+  createCigaretteEntrySchema,
+  listCigarettesQuerySchema,
+  type CreateCigaretteEntryInput,
+  type ListCigarettesQuery
+} from "./cigarettes.type.js";
+import * as cigarettesService from "./cigarettes.service.js";
 
-export function getCigarettesMcpTools(service: CigarettesService) {
-  return [
-    createMcpTool({
-      name: 'log_cigarettes',
-      description: 'Log cigarette consumption. Leave date null or omitted for today.',
-      schema: LogCigaretteInputSchema,
-      execute: (args) => service.logCigarettes(args),
-    }),
+const text = (data: unknown) => ({
+  content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
+});
 
-    createMcpTool({
-      name: 'get_cigarette_logs',
-      description: 'Get cigarette logs by single date or date range.',
-      schema: QueryLogsInputSchema,
-      execute: (args) => service.getLogs(args),
-    }),
+export function registerCigarettesMcp(server: McpServer): void {
+  server.registerTool(
+    "cigarettes_log",
+    {
+      title: "Log cigarette consumption",
+      description: "Record how many cigarettes were smoked on a given day (defaults to today).",
+      inputSchema: createCigaretteEntrySchema
+    },
+    async (args: CreateCigaretteEntryInput) => text(await cigarettesService.logCigarettes(args))
+  );
 
-    createMcpTool({
-      name: 'get_cigarette_summary',
-      description: 'Get total cigarettes smoked over a period (day, week, month, year) or custom date range.',
-      schema: SummaryQueryInputSchema,
-      execute: (args) => service.getSummary(args),
-    }),
+  server.registerTool(
+    "cigarettes_list",
+    {
+      title: "List cigarette entries",
+      description: "List logged cigarette entries, optionally filtered by a date range.",
+      inputSchema: listCigarettesQuerySchema
+    },
+    async (args: ListCigarettesQuery) => text(await cigarettesService.listEntries(args))
+  );
 
-    createMcpTool({
-      name: 'update_cigarette_log',
-      description: 'Update an existing cigarette entry count or timestamp by ID.',
-      schema: z.object({
-        id: z.string(),
-        updates: UpdateCigaretteInputSchema,
-      }),
-      execute: ({ id, updates }) => service.updateLog(id, updates),
-    }),
-  ];
+  server.registerTool(
+    "cigarettes_summary",
+    {
+      title: "Cigarette summary",
+      description: "Get consumption summary: today's count, 7/30-day totals, daily average and smoke-free streak."
+    },
+    async () => text(await cigarettesService.getSummary())
+  );
+
+  server.registerResource(
+    "cigarettes-summary",
+    "lms://cigarettes/summary",
+    {
+      title: "Cigarettes summary",
+      description: "Current cigarette consumption summary",
+      mimeType: "application/json"
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: "application/json",
+          text: JSON.stringify(await cigarettesService.getSummary(), null, 2)
+        }
+      ]
+    })
+  );
 }

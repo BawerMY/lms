@@ -1,48 +1,51 @@
-import { Router } from 'express';
-import { CigarettesService } from './cigarettes.service';
+import { Router } from "express";
+import { asyncHandler, getValidated, validate } from "../../utils/http.js";
+import * as cigarettesService from "./cigarettes.service.js";
+import {
+  createCigaretteEntrySchema,
+  listCigarettesQuerySchema,
+  type CreateCigaretteEntryInput,
+  type ListCigarettesQuery
+} from "./cigarettes.type.js";
 
-export function createCigarettesRouter(service: CigarettesService): Router {
-  const router = Router();
+export const cigarettesRouter = Router();
 
-  // POST /api/cigarettes
-  router.post('/', async (req, res, next) => {
-    try {
-      const log = await service.logCigarettes(req.body);
-      res.status(201).json(log);
-    } catch (err) {
-      next(err);
-    }
-  });
+cigarettesRouter.get(
+  "/",
+  validate(listCigarettesQuerySchema, "query"),
+  asyncHandler(async (req, res) => {
+    const query = getValidated<ListCigarettesQuery>(req, "query");
+    res.json(await cigarettesService.listEntries(query));
+  })
+);
 
-  // GET /api/cigarettes
-  router.get('/', async (req, res, next) => {
-    try {
-      const logs = await service.getLogs(req.query as any);
-      res.json(logs);
-    } catch (err) {
-      next(err);
-    }
-  });
+cigarettesRouter.get(
+  "/summary",
+  asyncHandler(async (_req, res) => {
+    res.json(await cigarettesService.getSummary());
+  })
+);
 
-  // GET /api/cigarettes/sum
-  router.get('/sum', async (req, res, next) => {
-    try {
-      const summary = await service.getSummary(req.query as any);
-      res.json(summary);
-    } catch (err) {
-      next(err);
-    }
-  });
+cigarettesRouter.post(
+  "/",
+  validate(createCigaretteEntrySchema, "body"),
+  asyncHandler(async (req, res) => {
+    const input = getValidated<CreateCigaretteEntryInput>(req, "body");
+    res.status(201).json(await cigarettesService.logCigarettes(input));
+  })
+);
 
-  // PATCH /api/cigarettes/:id
-  router.patch('/:id', async (req, res, next) => {
-    try {
-      const updated = await service.updateLog(req.params.id, req.body);
-      res.json(updated);
-    } catch (err) {
-      next(err);
-    }
-  });
+cigarettesRouter.get(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    res.json(await cigarettesService.getEntry(String(req.params.id)));
+  })
+);
 
-  return router;
-}
+cigarettesRouter.delete(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    await cigarettesService.deleteEntry(String(req.params.id));
+    res.status(204).end();
+  })
+);
